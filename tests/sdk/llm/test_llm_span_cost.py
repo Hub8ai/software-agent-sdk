@@ -97,6 +97,29 @@ def test_cache_buckets_survive_absent_prompt_tokens_details():
     assert Telemetry._cache_buckets(usage)[1] == 42
 
 
+def test_cache_buckets_tolerates_missing_cache_creation_attr():
+    """Older LiteLLM marked cache_* in model_fields_set then deleted the attrs."""
+
+    class _Details:
+        model_fields_set = {"cached_tokens", "cache_creation_tokens"}
+        cached_tokens = 100
+
+    usage = Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    usage.prompt_tokens_details = _Details()  # type: ignore[assignment]
+    assert Telemetry._cache_buckets(usage) == (100, 0)
+
+
+def test_cache_buckets_uses_cache_write_tokens_fallback():
+    class _Details:
+        model_fields_set = set()
+        cached_tokens = 3
+        cache_write_tokens = 9
+
+    usage = Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    usage.prompt_tokens_details = _Details()  # type: ignore[assignment]
+    assert Telemetry._cache_buckets(usage) == (3, 9)
+
+
 def test_span_closed_on_error(exporter):
     t = Telemetry(model_name="m", metrics=Metrics())
     t.on_request(telemetry_ctx={})

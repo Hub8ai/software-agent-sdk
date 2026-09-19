@@ -255,11 +255,12 @@ class Telemetry(BaseModel):
             details = usage.prompt_tokens_details
             if details is None:
                 return 0, 0
-            cache_write = (
-                details.cache_creation_tokens
-                if "cache_creation_tokens" in details.model_fields_set
-                else 0
-            )
+            # LiteLLM PromptTokensDetailsWrapper may put cache_* in
+            # model_fields_set then del the attrs when unset (OpenAI path).
+            # Prefer getattr over model_fields_set + bare attribute access.
+            cache_write = getattr(details, "cache_creation_tokens", None)
+            if cache_write is None:
+                cache_write = getattr(details, "cache_write_tokens", None)
             return int(details.cached_tokens or 0), int(cache_write or 0)
 
         details = usage.input_tokens_details
