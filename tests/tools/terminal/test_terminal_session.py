@@ -119,6 +119,35 @@ def test_basic_command(terminal_type):
     session.close()
 
 
+@parametrize_terminal_types
+def test_shell_exit_returns_promptly_with_exit_code(terminal_type):
+    """`exit` kills the shell; do not wait out the no-change timeout."""
+    session = create_terminal_session(
+        work_dir=os.getcwd(),
+        terminal_type=terminal_type,
+        no_change_timeout_seconds=30,
+    )
+    session.initialize()
+
+    alive = session.execute(TerminalAction(command="echo STILL_ALIVE"))
+    assert alive.metadata.exit_code == 0
+    assert "STILL_ALIVE" in alive.text
+    assert session.prev_status == TerminalCommandStatus.COMPLETED
+
+    t0 = time.monotonic()
+    obs = session.execute(TerminalAction(command="echo EXIT_MARKER && exit 7"))
+    elapsed = time.monotonic() - t0
+
+    assert elapsed < 5.0, f"shell exit waited too long: {elapsed:.2f}s"
+    assert obs.metadata.exit_code == 7
+    assert obs.exit_code == 7
+    assert "EXIT_MARKER" in obs.text
+    assert obs.metadata.suffix == "\n[The command completed with exit code 7.]"
+    assert session.prev_status == TerminalCommandStatus.COMPLETED
+    assert session.is_running() is False
+    session.close()
+
+
 def test_subprocess_terminal_debug_logs_omit_command_and_output(caplog):
     session = create_terminal_session(work_dir=os.getcwd(), terminal_type="subprocess")
     session.initialize()

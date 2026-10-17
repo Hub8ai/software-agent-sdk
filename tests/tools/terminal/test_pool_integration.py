@@ -112,14 +112,12 @@ class TestConcurrentExecution:
 
 
 class TestTmuxPoolRecovery:
-    def test_shell_exit_returns_actionable_error_and_rebuilds_pool(self, pool_executor):
-        obs = pool_executor(TerminalAction(command="exit 7", timeout=1.0))
+    def test_shell_exit_returns_exit_code_and_replaces_pane(self, pool_executor):
+        obs = pool_executor(TerminalAction(command="exit 7", timeout=5.0))
 
-        assert obs.is_error
-        assert obs.exit_code == -1
-        assert "rebuilt the terminal pool" in obs.text
-        assert "top-level `exit`" in obs.text
-        assert "Original tmux error:" in obs.text
+        assert obs.exit_code == 7
+        assert obs.metadata.exit_code == 7
+        assert obs.metadata.suffix == "\n[The command completed with exit code 7.]"
 
         after = pool_executor(TerminalAction(command="echo after_rebuild", timeout=5.0))
 
@@ -128,8 +126,8 @@ class TestTmuxPoolRecovery:
         assert "after_rebuild" in after.text
 
     def test_reset_after_shell_exit_uses_rebuilt_pool(self, pool_executor):
-        obs = pool_executor(TerminalAction(command="exit 0", timeout=1.0))
-        assert obs.is_error
+        obs = pool_executor(TerminalAction(command="exit 0", timeout=5.0))
+        assert obs.exit_code == 0
 
         reset_obs = pool_executor(
             TerminalAction(command="pwd", reset=True, timeout=5.0)

@@ -517,6 +517,14 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                 self._export_envs(cmd_action, conversation, session=session)
                 observation = session.execute(cmd_action)
 
+                # `exit` leaves a dead pane (remain-on-exit). Replace it so the
+                # next checkout does not reuse a dead shell. Keep the real
+                # exit code from session.execute rather than the old
+                # server-disappeared recovery path.
+                if handle.terminal.shell_exit_code() is not None:
+                    self._discard_session(handle.terminal)
+                    handle.terminal = pool.replace(handle.terminal)
+
                 if reset_text is not None:
                     observation = observation.model_copy(
                         update={

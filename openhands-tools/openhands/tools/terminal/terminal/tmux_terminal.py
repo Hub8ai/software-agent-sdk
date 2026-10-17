@@ -6,6 +6,7 @@ import uuid
 from collections.abc import Mapping
 
 import libtmux
+from libtmux.exc import LibTmuxException
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.redact import redact_api_key_literals
@@ -149,6 +150,9 @@ class TmuxTerminal(TerminalInterface):
         # https://unix.stackexchange.com/questions/43414/unlimited-history-in-tmux
         self.session.set_option("history-limit", str(HISTORY_LIMIT))
         self.session.history_limit = str(HISTORY_LIMIT)
+        # Keep the pane after the shell exits so we can read pane_dead_status
+        # instead of losing the tmux server (and the command's exit code).
+        self.session.set_option("remain-on-exit", True)
 
         # Create a new pane because the initial pane's history limit is (default) 2000
         _initial_window = self.session.active_window
@@ -157,6 +161,9 @@ class TmuxTerminal(TerminalInterface):
             window_shell=window_command,
             start_directory=self.work_dir,
         )
+        # Window-scoped remain-on-exit: session defaults alone are not enough
+        # for the newly created shell window on all tmux/libtmux versions.
+        self.window.set_option("remain-on-exit", True)
         active_pane = self.window.active_pane
         assert active_pane is not None, "Window should have an active pane"
         self.pane = active_pane
@@ -268,12 +275,38 @@ class TmuxTerminal(TerminalInterface):
         """
         if not self._initialized or not isinstance(self.pane, libtmux.Pane):
             return False
+        if self.shell_exit_code() is not None:
+            return False
         try:
             self.pane.send_keys("C-c", enter=False)
             return True
         except Exception as e:
             logger.error(f"Failed to interrupt command: {e}", exc_info=True)
             return False
+
+    def shell_exit_code(self) -> int | None:
+        """Return the pane process exit code once the shell has exited.
+
+        Requires remain-on-exit so the dead pane (and pane_dead_status) remain
+        readable after `exit`.
+        """
+        if not self._initialized or self._closed:
+            return None
+        if not isinstance(self.pane, libtmux.Pane):
+            return None
+        try:
+            dead = self.pane.cmd("display-message", "-p", "#{pane_dead}").stdout
+            if not dead or str(dead[0]).strip() != "1":
+                return None
+            status = self.pane.cmd(
+                "display-message", "-p", "#{pane_dead_status}"
+            ).stdout
+            if not status:
+                return 0
+            return int(str(status[0]).strip())
+        except (ValueError, TypeError, IndexError, LibTmuxException) as e:
+            logger.debug(f"Unable to read tmux pane exit status: {e}")
+            return None
 
     def is_running(self) -> bool:
         """Check if a command is currently running.
@@ -282,6 +315,8 @@ class TmuxTerminal(TerminalInterface):
         is ready for new commands (ends with prompt).
         """
         if not self._initialized:
+            return False
+        if self.shell_exit_code() is not None:
             return False
 
         try:

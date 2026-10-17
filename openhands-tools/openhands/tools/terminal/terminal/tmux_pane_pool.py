@@ -133,6 +133,9 @@ class TmuxPanePool:
         for k, v in env.items():
             self._session.set_environment(k, v)
         self._session.set_option("history-limit", str(HISTORY_LIMIT))
+        # Keep dead panes so shell_exit_code() can read pane_dead_status
+        # without the whole pool session disappearing on `exit`.
+        self._session.set_option("remain-on-exit", True)
 
         # Keep a reference to the default window so we can kill it once
         # the first real pane window is created (tmux requires at least
@@ -179,6 +182,7 @@ class TmuxPanePool:
             window_shell=shell_command,
             start_directory=self.work_dir,
         )
+        window.set_option("remain-on-exit", True)
         active_pane = window.active_pane
         assert active_pane is not None
 

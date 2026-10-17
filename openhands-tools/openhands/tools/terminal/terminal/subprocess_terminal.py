@@ -82,6 +82,7 @@ class SubprocessTerminal(TerminalInterface):
     output_lock: threading.Lock
     reader_thread: threading.Thread | None
     _current_command_running: bool
+    _stop_reader: threading.Event
 
     def __init__(
         self,
@@ -99,6 +100,7 @@ class SubprocessTerminal(TerminalInterface):
         self.output_buffer = deque(maxlen=HISTORY_LIMIT + 50)  # Circular buffer
         self.output_lock = threading.Lock()
         self.reader_thread = None
+        self._stop_reader = threading.Event()
         self._current_command_running = False
         self.shell_path = shell_path
         self._env = normalize_terminal_env(env)
@@ -184,6 +186,7 @@ class SubprocessTerminal(TerminalInterface):
         fcntl.fcntl(self._pty_master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
         # Start output reader thread
+        self._stop_reader.clear()
         self.reader_thread = threading.Thread(
             target=self._read_output_continuously_pty, daemon=True
         )
@@ -207,8 +210,12 @@ class SubprocessTerminal(TerminalInterface):
         if self._closed:
             return
 
+        # Stop the reader before closing the master FD so select/read do not
+        # race with teardown (Errno 9 Bad file descriptor).
+        self._stop_reader.set()
+
         try:
-            if self.process:
+            if self.process and self.process.poll() is None:
                 # Try a graceful exit
                 try:
                     self._write_pty(b"exit\n")
@@ -226,7 +233,6 @@ class SubprocessTerminal(TerminalInterface):
         except Exception as e:
             logger.error(f"Error closing PTY terminal: {e}", exc_info=True)
         finally:
-            # Reader thread stop: close master FD; thread exits on read error/EOF
             try:
                 if self._pty_master_fd is not None:
                     os.close(self._pty_master_fd)
@@ -262,11 +268,17 @@ class SubprocessTerminal(TerminalInterface):
             return
 
         try:
-            while True:
+            while not self._stop_reader.is_set():
                 # Drain bytes that are already queued before treating a dead
                 # shell as finished. `exit` kills bash with no new PS1.
                 dead = self.process is not None and self.process.poll() is not None
-                r, _, _ = select.select([fd], [], [], 0.0 if dead else 0.1)
+                try:
+                    r, _, _ = select.select([fd], [], [], 0.0 if dead else 0.1)
+                except (OSError, ValueError):
+                    # Master FD closed during teardown.
+                    break
+                if self._stop_reader.is_set():
+                    break
                 if not r:
                     if dead:
                         break
@@ -283,13 +295,17 @@ class SubprocessTerminal(TerminalInterface):
                         self._add_text_to_buffer(text)
                 except OSError:
                     # Would-block or FD closed
-                    if dead:
-                        break
-                    continue
+                    break
                 except Exception as e:
                     logger.debug(f"Error reading PTY output: {e}")
                     break
         except Exception as e:
+            if self._stop_reader.is_set():
+                return
+            errno = getattr(e, "errno", None)
+            if isinstance(e, OSError) and errno in (9,):
+                logger.debug("PTY reader stopped after FD close: %s", e)
+                return
             logger.error(f"PTY reader thread error: {e}", exc_info=True)
 
     def _add_text_to_buffer(self, text: str) -> None:
